@@ -26,12 +26,15 @@
 *.a
 *.lib
 
+# Exceptions
+!libs/precompiled/*.a
+
 # Executables
 *.exe
 *.out
 *.app
 
-#user files
+# User files
 VRAM_PSP_inside_use.txt
 sceTODO.txt
 PIC1.PNG
