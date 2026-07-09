@@ -17,7 +17,7 @@ INCDIR = $(PSPPATH)/include
 INCDIR += ./SP-P_Engine
 #флаги оптимизации при сборке-надо по эксперементировать,-O0-O3-чем выше,тем оптимизированей.G0-вырубает отладочную инфу,Wall-компилятор выводит предупреждения
 #-mpreferred-stack-boundary=X,выравнивает стаки кеша проца на 2^X байт,-enable-newlib-hw-fp-задействует Floating point CPU.
-CFLAGS = -O0 -G0 -g -Wall -mpreferred-stack-boundary=4 -ffast-math -fno-rtti -fno-exceptions
+CFLAGS = -O3 -G0 -g -Wall -mpreferred-stack-boundary=4 -ffast-math -fno-rtti -fno-exceptions
 #-fno-strict-aliasing
 
 # --- КОНФИГУРАЦИЯ СБОРКИ (FAT / SLIM) ---
@@ -48,9 +48,6 @@ LIBS = -lpspgum -lpspgu -lpspdisplay -lpspge -lm -lc -lpspsdk -lpspvfpu -lpspuse
 
 EXTRA_TARGETS = EBOOT.PBP
 PSP_EBOOT_TITLE = SPP_EXPv11
-PSP_EBOOT_ICON = ICON0.PNG
-PSP_EBOOT_PIC1 = PIC1.PNG
-PSP_EBOOT_SND0 = SND0.AT3
 
 PSPSDK=$(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak

@@ -36,6 +36,7 @@
 
 # User files
 VRAM_PSP_inside_use.txt
+makefile.bcp
 sceTODO.txt
 PIC1.PNG
 ICON0.PNG
