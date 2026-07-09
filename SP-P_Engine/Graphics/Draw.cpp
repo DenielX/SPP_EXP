@@ -6,87 +6,17 @@
 
 int g_draw_calls_this_frame = 0;
 bool g_enable_culling = true;
-unsigned int __attribute__((aligned(16))) list[262144];//262144 (1mb под команды GE)
+unsigned int __attribute__((aligned(16))) list[1024];//под обновление камеры
+// Выделяем 1mb под команды GE
+unsigned int __attribute__((aligned(16))) static_world_list[262144];
+int g_total_baked_draw_calls = 0; // Для сохранения логов
 
-// =======================================================
-// ПРОГРАММНЫЙ FRUSTUM CULLING (RADAR OPTIMIZED FOR PSP)
-// =======================================================
-// Используем только 3 плоскости: 0-Right, 1-Left, 2-Near, 3-Far
-// ВНИМАНИЕ: Far отключен! Дальность контролируется отдельной дельтой.
-float g_frustum_planes[3][4];
-
-void UpdateFrustum() {
-	ScePspFMatrix4 proj, view;
-	sceGumMatrixMode(GU_PROJECTION);
-	sceGumStoreMatrix(&proj);
-	sceGumMatrixMode(GU_VIEW);
-	sceGumStoreMatrix(&view);
-
-	float proj_f_mtx[16], view_f_mtx[16], clip_f_mtx[16];
-	memcpy(proj_f_mtx, &proj, sizeof(ScePspFMatrix4));
-	memcpy(view_f_mtx, &view, sizeof(ScePspFMatrix4));
-
-	// Умножаем матрицы: clip_f_mtx = Projection * View
-	for (int i = 0; i < 16; i += 4) {
-		for (int j = 0; j < 4; ++j) {
-			clip_f_mtx[i + j] = proj_f_mtx[j] * view_f_mtx[i] + proj_f_mtx[4 + j] * view_f_mtx[i + 1] + proj_f_mtx[8 + j] * view_f_mtx[i + 2] + proj_f_mtx[12 + j] * view_f_mtx[i + 3];
-		}
-	}
-
-	// Извлекаем только 3 плоскости
-	g_frustum_planes[0][0] = clip_f_mtx[3] - clip_f_mtx[0]; g_frustum_planes[0][1] = clip_f_mtx[7] - clip_f_mtx[4]; g_frustum_planes[0][2] = clip_f_mtx[11] - clip_f_mtx[8]; g_frustum_planes[0][3] = clip_f_mtx[15] - clip_f_mtx[12]; // Right
-	g_frustum_planes[1][0] = clip_f_mtx[3] + clip_f_mtx[0]; g_frustum_planes[1][1] = clip_f_mtx[7] + clip_f_mtx[4]; g_frustum_planes[1][2] = clip_f_mtx[11] + clip_f_mtx[8]; g_frustum_planes[1][3] = clip_f_mtx[15] + clip_f_mtx[12]; // Left
-	g_frustum_planes[2][0] = clip_f_mtx[3] + clip_f_mtx[2]; g_frustum_planes[2][1] = clip_f_mtx[7] + clip_f_mtx[6]; g_frustum_planes[2][2] = clip_f_mtx[11] + clip_f_mtx[10]; g_frustum_planes[2][3] = clip_f_mtx[15] + clip_f_mtx[14]; // Near
-
-	// Нормализуем плоскости
-	for (int i = 0; i < 3; ++i) {
-		float length = sqrtf(g_frustum_planes[i][0] * g_frustum_planes[i][0] + g_frustum_planes[i][1] * g_frustum_planes[i][1] + g_frustum_planes[i][2] * g_frustum_planes[i][2]);
-		if (length > 0.0001f) {
-			float inv_len = 1.0f / length;
-			g_frustum_planes[i][0] *= inv_len;
-			g_frustum_planes[i][1] *= inv_len;
-			g_frustum_planes[i][2] *= inv_len;
-			g_frustum_planes[i][3] *= inv_len;
-		}
-	}
-}
-
-// Оптимизированная проверка (4 плоскости)
-bool SphereInFrustum(float x, float y, float z, float radius) {
-	for (int i = 0; i < 3; ++i) {
-		float distance = g_frustum_planes[i][0] * x + g_frustum_planes[i][1] * y + g_frustum_planes[i][2] * z + g_frustum_planes[i][3];
-		if (distance <= -radius) {
-			return false; // Отсекаем!
-		}
-	}
-	return true;
-}
-
-// =======================================================
-// ПРЕДРАСЧЕТ МАТРИЦ (Вызвать ОДИН РАЗ после загрузки карты)
-// =======================================================
-
-void PrecalculateMatrices() {
-	for (unsigned int i = 0; i < countobj; ++i) {
-		if (drawlist[i].MDL_clump == nullptr) continue;
-		int flag = (int)(*drawlist[i].MDL_clump->flags[0]);
-
-		if (flag == 0) {
-			// Достаем WRLD масштаб, который мы сохранили в конвертере
-			// wrld_radius лежит сразу после 16-байтного заголовка в .mdl файле.
-			float &scale = *drawlist[i].MDL_clump->wrld_radius;
-			float* mat = drawlist[i].IPL_struct->rotation_matrix;
-				mat[0] *= scale; mat[1] *= scale; mat[2] *= scale;
-				mat[4] *= scale; mat[5] *= scale; mat[6] *= scale;
-				mat[8] *= scale; mat[9] *= scale; mat[10] *= scale;
-			}
-	}
-}
 
 // =======================================================
 // ЕДИНОРАЗОВАЯ НАСТРОЙКА ОСВЕЩЕНИЯ И СТЕЙТОВ
 // =======================================================
 void InitRenderStates() {
+	// Настройка освещения
 	sceGuDisable(GU_LIGHTING);
 	sceGuEnable(GU_LIGHT0);
 	sceGuEnable(GU_NORMALIZED_NORMAL);
@@ -101,8 +31,8 @@ void InitRenderStates() {
 	sceGuColorMaterial(GU_AMBIENT | GU_DIFFUSE);
 	sceGuMaterial(GU_AMBIENT | GU_DIFFUSE, 0xFFFFFFFF);
 
+	// Базовые стейты (Z-буфер, Куллинг, Цвет очистки)
 	sceGuEnable(GU_CLIP_PLANES);
-	//sceGuDisable(GU_CLIP_PLANES);
 	sceGuEnable(GU_DEPTH_TEST);
 	sceGuDepthFunc(GU_LEQUAL);
 	sceGuEnable(GU_TEXTURE_2D);
@@ -111,34 +41,18 @@ void InitRenderStates() {
 	sceGuClearColor(0xFFFFB466);
 	sceGuClearDepth(65535);
 
+	// По умолчанию для непрозрачных (глухих) объектов
 	sceGuDisable(GU_BLEND);
 	sceGuEnable(GU_ALPHA_TEST);
-	sceGuAlphaFunc(GU_GREATER, 0x10, 0xFF);
-	sceGuDepthMask(GU_FALSE);
+	sceGuAlphaFunc(GU_GREATER, 0x10, 0xFF); // Отсекаем пиксели с прозрачностью (дырки в заборах)
+	sceGuDepthMask(GU_FALSE); // Разрешаем запись в Z-буфер
 }
 
-// =======================================================
-// ГЛАВНЫЙ ЦИКЛ ОТРИСОВКИ (ДИНАМИЧЕСКИЙ CULLING)
-// =======================================================
-void OnDraw()
-{
-	g_draw_calls_this_frame = 0;
+void BakeStaticWorldList() {
+	// Начинаем запись в наш статический массив
+	sceGuStart(GU_CALL, static_world_list);
 
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-
-    // ============================================================
-    // ЭТАП 0: ДИНАМИЧЕСКОЕ ОБНОВЛЕНИЕ КАМЕРЫ И МАТРИЦ
-    // ============================================================
-    sceGumMatrixMode(GU_PROJECTION);
-    sceGumLoadIdentity();
-    // СЮДА ПЕРЕНЕСЕНО: Теперь fov и дальность обновляются каждый кадр!
-    sceGumPerspective(fov, 480.0f / 272.0f, front_plane, draw_dist);
-	Camera();
-	sceGumUpdateMatrix();
-
-    // Пересчитываем плоскости камеры для отсечения геометрии
-    UpdateFrustum();
-	// Базовые стейты
+	// Сброс стейтов перед началом кадра (запишется в начало списка)
 	sceGuDisable(GU_LIGHTING);
 	sceGuDisable(GU_BLEND);
 	sceGuEnable(GU_ALPHA_TEST);
@@ -155,69 +69,16 @@ void OnDraw()
 	int prim_type;
 	unsigned int vertex_stride;
 
-	// Кэшируем камеру для сверхбыстрого доступа
-	float cx = m_camera_position_x;
-	float cy = m_camera_position_y;
+	g_total_baked_draw_calls = 0;
+
+	// Извлекаем масштаб один раз, чтобы не дергать указатели в цикле
+	float wrld_scale = 1.0f;
+	if (drawlist[0].MDL_clump->wrld_radius != nullptr) {
+		wrld_scale = *drawlist[0].MDL_clump->wrld_radius;
+	}
 
 	while (i < countobj) {
 		unsigned int current_instances = drawlist[i].IPL_struct->count_instances;
-
-		// ============================================================
-		// ЭТАП 1: СОБИРАЕМ СПИСОК ВИДИМЫХ КЛОНОВ (CULLING)
-		// ============================================================
-		unsigned int visible_instances[2048]; // на стеке
-		unsigned int num_visible = 0;
-
-		float obj_radius = 50.0f; // Запас
-		if (drawlist[i].MDL_clump->model_radius != nullptr) {
-			obj_radius = *drawlist[i].MDL_clump->model_radius;
-		}
-
-		// --- НАСТРОЙКИ ДЕЛЬТ ОТСЕЧЕНИЯ ---
-		// 1. Насколько метров дальше аппаратного draw_dist мы отсекаем геометрию программно
-		float far_cull_delta = 85.0f;
-		// 2. Искусственное "раздувание" модели, чтобы она не пропадала по краям экрана
-		//float edge_cull_delta = 15.0f;
-
-		// Вычисляем квадрат дистанции ровно 1 раз для всей группы
-		float cull_dist = (float)draw_dist + obj_radius + far_cull_delta;//155+, иначе frustrum culling съедает объекты по краям экрана
-		float cull_dist_sq = cull_dist * cull_dist;
-
-		for (unsigned int inst = i; inst < i + current_instances; ++inst) {
-			// 2. Если куллинг выключен, принудительно добавляем объект
-			if (!g_enable_culling) {
-				if (num_visible < 2048) visible_instances[num_visible++] = inst;
-				continue;
-			}
-
-            float ox = drawlist[inst].IPL_struct->x_ipl;
-            float oy = drawlist[inst].IPL_struct->y_ipl;
-            float oz = drawlist[inst].IPL_struct->z_ipl;
-
-            float dx = ox - cx;
-            float dy = oy - cy;
-            // dz убрано! Теперь дальность считается как Цилиндр (высота игнорируется)
-
-            if ((dx * dx + dy * dy) <= cull_dist_sq) {
-				//float cull_radius_delta = 10.0f;
-                // ПРОВЕРКА FRUSTUM CULLING (Попадает ли объект в fov камеры?)
-                if (SphereInFrustum(ox, oy, oz, obj_radius )) {
-                    if (num_visible < 2048) {
-                        visible_instances[num_visible++] = inst;
-                    }
-                }
-            }
-        }
-
-		// Если ни один клон столба не попал в кадр - пропускаем весь процесс биндинга текстур!
-		if (num_visible == 0) {
-			i += current_instances;
-			continue;
-		}
-
-		// ============================================================
-		// ЭТАП 2: ОТРИСОВКА МАТЕРИАЛОВ (ТОЛЬКО ДЛЯ ВИДИМЫХ КЛОНОВ)
-		// ============================================================
 		int flag = (int)(*drawlist[i].MDL_clump->flags[0]);
 
 		prim_type = (flag == 0) ? GU_TRIANGLE_STRIP : ((flag == 1) ? GU_TRIANGLE_STRIP : GU_TRIANGLES);
@@ -241,6 +102,7 @@ void OnDraw()
 			continue;
 		}
 
+
 		unsigned short num_materials = *drawlist[i].MDL_clump->count_materials_or_index_of_material[0];
 		unsigned int geom_offset = *drawlist[i].MDL_clump->mdl_size;
 
@@ -261,7 +123,6 @@ void OnDraw()
 			}
 		}
 
-		// Проверка флага куллинга 
 		if (*drawlist[i].MDL_clump->dis_cull[0] != is_culling_disabled) {
 			if (*drawlist[i].MDL_clump->dis_cull[0]) {
 				sceGuDisable(GU_CULL_FACE);
@@ -271,20 +132,20 @@ void OnDraw()
 			is_culling_disabled = *drawlist[i].MDL_clump->dis_cull[0];
 		}
 
-		// Отрисовка сабмешей модели
-		for (int m0 = num_materials - 1; m0 >= 0; --m0) {
+		for (int m0 = num_materials - 1; m0 >= 0; m0--) {
 			unsigned int countInSub = *drawlist[i].MDL_clump->count_vertices_in_submesh[m0];
 			if (countInSub <= 0) continue;
 
 			geom_offset -= countInSub * vertex_stride;
 			void* current_vertex_ptr = (void*)((char*)img->vaddr + geom_offset);
+
 			// --- Аппаратная распаковка WRLD (UV и Координаты) ---
 			if (flag == 0) {
 				// Восстановление UV (Аппаратная матрица текстуры)
 				float uv_range = *drawlist[i].MDL_clump->uv_range[m0];
 				float min_u = *drawlist[i].MDL_clump->min_u[m0];
 				float min_v = *drawlist[i].MDL_clump->min_v[m0];
-				float tex_scale = (128.0f / 255.0f) * uv_range;//view_f_mtx
+				float tex_scale = (128.0f / 255.0f) * uv_range;
 				sceGuTexScale(tex_scale, tex_scale);
 				sceGuTexOffset(min_u, min_v);
 			} else {
@@ -292,6 +153,7 @@ void OnDraw()
 				sceGuTexOffset(0.0f, 0.0f);
 			}
 
+			// --- Биндинг Текстур ---
 			unsigned int tex_idx = *drawlist[i].MDL_clump->texture_index[m0];
 			if (tex_idx != 0xFFFF) {
 				ClumpTEX* tex = &TEX_clump[tex_idx];
@@ -320,36 +182,53 @@ void OnDraw()
 				}
 			}
 
-			// Проходим ТОЛЬКО по массиву видимых клонов, который мы собрали выше!
-			for (unsigned int v = 0; v < num_visible; ++v) {
-				unsigned int inst = visible_instances[v];
-
+			// =======================================================
+			// 2. ОТРИСОВКА (чистый цикл для всех типов)
+			// =======================================================
+			for (unsigned int inst = i; inst < i + current_instances; ++inst) {
 				ScePspFMatrix4 __attribute__((aligned(16))) aligned_matrix;
 				memcpy(&aligned_matrix, drawlist[inst].IPL_struct->rotation_matrix, sizeof(ScePspFMatrix4));
 
+				// Применяем масштаб только для кусков карты (WRLD)
+				if (flag == 0) {
+					aligned_matrix.x.x *= wrld_scale; aligned_matrix.x.y *= wrld_scale; aligned_matrix.x.z *= wrld_scale;
+					aligned_matrix.y.x *= wrld_scale; aligned_matrix.y.y *= wrld_scale; aligned_matrix.y.z *= wrld_scale;
+					aligned_matrix.z.x *= wrld_scale; aligned_matrix.z.y *= wrld_scale; aligned_matrix.z.z *= wrld_scale;
+				}
+
 				sceGuSetMatrix(GU_MODEL, &aligned_matrix);
+
+				// Записываем команду отрисовки геометрии
 				sceGuDrawArray(prim_type, vertex_format, countInSub, nullptr, current_vertex_ptr);
 
-				++g_draw_calls_this_frame;
+				g_total_baked_draw_calls++;
 			}
-			//for (unsigned int inst = i; inst < i + current_instances; ++inst) {
+		} // Конец цикла материалов (m0)
 
-
-			//	// 2. ОТПРАВКА ГОТОВОЙ МАТРИЦЫ И ОТРИСОВКА
-			//	// Кастуем float[16] к ScePspFMatrix4* для видеочипа
-			//	////sceGuSetMatrix(GU_MODEL, (ScePspFMatrix4*)drawlist[inst].IPL_struct->rotation_matrix);
-
-			//	//чуть больше загрузка CPU, но меньше GE (чем каст в ScePspFMatrix4*)
-			//	ScePspFMatrix4 __attribute__((aligned(16))) aligned_matrix;
-			//	memcpy(&aligned_matrix, drawlist[inst].IPL_struct->rotation_matrix, sizeof(ScePspFMatrix4));
-
-			//	sceGuSetMatrix(GU_MODEL, &aligned_matrix);
-
-			//	sceGuDrawArray(prim_type, vertex_format, countInSub, nullptr, current_vertex_ptr);
-
-			//	++g_draw_calls_this_frame;
-			//}
-		}
 		i += current_instances;
-	}
+	} // Конец цикла по объектам
+
+	sceGuFinish(); // ПРАВИЛЬНОЕ РАСПОЛОЖЕНИЕ: Финиш ВНЕ главного цикла!
+}
+
+// =======================================================
+// ГЛАВНЫЙ ЦИКЛ ОТРИСОВКИ (ВЫЗЫВАЕТСЯ КАЖДЫЙ КАДР!)
+// =======================================================
+void OnDraw()
+{
+	g_draw_calls_this_frame = g_total_baked_draw_calls;
+
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+
+	// Обновляем матрицу проекции и позицию камеры
+	sceGumMatrixMode(GU_PROJECTION);
+	sceGumLoadIdentity();
+	sceGumPerspective(fov, 480.0f / 272.0f, front_plane, draw_dist);
+
+	Camera();
+	sceGumUpdateMatrix();
+
+	// УЛЬТИМАТИВНАЯ ОПТИМИЗАЦИЯ CPU:
+	// Просто говорим видеочипу выполнить запеченный список в ОЗУ.
+	sceGuCallList(static_world_list);
 }

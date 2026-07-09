@@ -91,7 +91,7 @@ int main()
 	sceGuDisplay(GU_TRUE);
 
 	MasteringOBJ();
-	PrecalculateMatrices();
+	BakeStaticWorldList();
 
 	sceCtrlSetSamplingCycle(0);
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
