@@ -168,8 +168,15 @@ void BakeStaticWorldList() {
 					sceGuTexMode(gu_fmt, 0, 0, tex->pix_swizzle);
 
 					if ((gu_fmt == GU_PSM_T4 || gu_fmt == GU_PSM_T8) && tex->pal_data != nullptr) {
-						int clut_fmt = (tex->pal_form == 0x03) ? GU_PSM_8888 : GU_PSM_4444;
+						// Динамически определяем формат палитры
+						int clut_fmt = GU_PSM_8888;
+						if (tex->pal_form == 0x00) clut_fmt = GU_PSM_5650;
+						else if (tex->pal_form == 0x01) clut_fmt = GU_PSM_5551;
+						else if (tex->pal_form == 0x02) clut_fmt = GU_PSM_4444;
+						// 0x03 по умолчанию останется 8888
+
 						sceGuClutMode(clut_fmt, 0, 0xFF, 0);
+
 						unsigned int bytes_per_color = (tex->pal_form == 0x03) ? 4 : 2;
 						unsigned int blocks = (tex->pal_count * bytes_per_color) / 32;
 						sceGuClutLoad(blocks, tex->pal_data);

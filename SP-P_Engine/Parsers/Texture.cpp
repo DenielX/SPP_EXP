@@ -89,7 +89,13 @@ ClumpTEX* ParserTEX(unsigned char* texture, ClumpTEX* TEX_clump_arg) {
 	// --- 2. ОПРЕДЕЛЕНИЕ РАЗМЕРОВ И ФОРМАТОВ ---
 	switch (TEX_clump_arg->pix_form) {
 	case 0x00: // PSM_5650
+		TEX_clump_arg->colors = 2;
+		TEX_clump_arg->size = TEX_clump_arg->width * TEX_clump_arg->height * 2;
+		break;
 	case 0x01: // PSM_5551
+		TEX_clump_arg->colors = 2;
+		TEX_clump_arg->size = TEX_clump_arg->width * TEX_clump_arg->height * 2;
+		break;
 	case 0x02: // PSM_4444
 		TEX_clump_arg->colors = 2;
 		TEX_clump_arg->size = TEX_clump_arg->width * TEX_clump_arg->height * 2;
